@@ -1,0 +1,28 @@
+[user]
+    name = Sheng-Li
+    email = slwang@ksvs.kh.edu.tw
+
+[color]
+    ui = auto
+
+[branch]
+	sort = -committerdate
+
+[checkout]
+	defaultRemote = origin
+
+[init]
+    defaultBranch = main
+
+[push]
+    default = current
+
+[fetch]
+	prune = true
+	pruneTags = true
+	all = true
+
+[color "status"]
+	added = green bold
+	changed = yellow bold
+	untracked = red bold
