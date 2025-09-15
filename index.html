@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>首頁 - 上傳考卷系統</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f7f7f7;
+            margin: 0;
+        }
+
+        .container {
+            max-width: 400px;
+            margin: 80px auto;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px #0001;
+            padding: 32px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        .email {
+            margin: 24px 0;
+            text-align: center;
+            font-size: 1.2em;
+            color: #0070f3;
+        }
+
+        .login-btn,
+        .logout-btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 4px;
+            background: #0070f3;
+            color: #fff;
+            font-size: 1em;
+            cursor: pointer;
+            margin-top: 16px;
+        }
+
+        .logout-btn {
+            background: #e00;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="navbar" style="display:none;">
+        <div class="nav-left">上傳考卷系統</div>
+        <div class="nav-right" id="nav-email"></div>
+    </div>
+
+    <div class="container" id="main-container">
+        <h1>定期考考卷上傳系統</h1>
+        <div id="auth-section">
+            <button class="login-btn" onclick="login()">使用 Google 登入</button>
+        </div>
+        <div id="domain-prompt" style="margin-top:12px;color:#444"></div>
+    </div>
+    <script>
+        /* 改善前端顯示：loading 標示、錯誤處理、未登入或未授權替代文字 */
+
+        function escapeHtml(unsafe) {
+            if (!unsafe) return '';
+            return String(unsafe)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function setAuthHTML(html) {
+            document.getElementById('auth-section').innerHTML = html;
+        }
+
+        function showLoading() {
+            setAuthHTML('<div class="email">載入中 <span class="spinner" aria-hidden="true"></span></div>');
+        }
+
+        function showEmail(email) {
+            setAuthHTML('<div class="email">登入成功，您的 Email：<br><b>' + escapeHtml(email) + '</b></div>' +
+                '<button class="logout-btn" onclick="logout()">登出</button>');
+        }
+
+        function showLoginPrompt() {
+            setAuthHTML('<div class="email">未登入或未授權存取 Email。請按下方登入並授權。</div>' +
+                '<button class="login-btn" onclick="login()">使用 Google 登入</button>');
+        }
+
+        function showError(message) {
+            setAuthHTML('<div class="email" style="color:#e00">錯誤：' + escapeHtml(message) + '</div>' +
+                '<button class="login-btn" onclick="login()">重試</button>');
+        }
+
+        function fetchUserEmail() {
+            showLoading();
+            if (typeof google !== 'undefined' && google.script) {
+                google.script.run
+                    .withSuccessHandler(function (email) {
+                        if (email) {
+                            showEmail(email);
+                        } else {
+                            showLoginPrompt();
+                        }
+                    })
+                    .withFailureHandler(function (err) {
+                        var msg = (err && err.message) ? err.message : JSON.stringify(err);
+                        showError(msg);
+                    })
+                    .getUserEmail();
+            } else {
+                showError('google.script 未載入；請以 Apps Script Web App 方式開啟此頁面。');
+            }
+        }
+
+        // 新：呼叫後端檢查使用者是否在指定試算表欄位中
+        function fetchUserAccessInfo() {
+            // 顯示 loading
+            showLoading();
+            if (typeof google === 'undefined' || !google.script) {
+                showError('google.script 未載入；請以 Apps Script Web App 方式開啟此頁面。');
+                return;
+            }
+
+            google.script.run
+                .withSuccessHandler(function (res) {
+                    // res = { email, authorized, domain }
+                    if (!res || !res.email) {
+                        showLoginPrompt();
+                        return;
+                    }
+
+                    // 若授權（email 出現在命題教師Email 欄）
+                    if (res.authorized) {
+                        // 顯示 navbar 並在右上角放 email
+                        document.getElementById('navbar').style.display = 'flex';
+                        document.getElementById('nav-email').innerText = res.email;
+                        showEmail(res.email);
+                        document.getElementById('domain-prompt').innerText = '';
+                    } else {
+                        // 未授權：提示要登入設定工作表中 A 欄為「使用者信箱網域」對應的 B 欄值
+                        showLoginPrompt();
+                        if (res.domain) {
+                            document.getElementById('domain-prompt').innerText = '提示：請使用網域為 "' + escapeHtml(res.domain) + '" 的帳號登入，或至「設定」工作表新增網域。';
+                        } else {
+                            document.getElementById('domain-prompt').innerText = '提示：尚未設定可登入的信箱網域，請聯絡管理員在「設定」工作表新增。';
+                        }
+                    }
+                })
+                .withFailureHandler(function (err) {
+                    var msg = (err && err.message) ? err.message : JSON.stringify(err);
+                    showError(msg);
+                })
+                .getUserAccessInfo();
+        }
+
+        function login() {
+            fetchUserEmail();
+        }
+
+        function logout() {
+            // Apps Script 無法直接登出 Google 帳號，這裡僅重設畫面
+            showLoginPrompt();
+        }
+
+        // 頁面載入時自動檢查授權與登入狀態
+        window.onload = function () {
+            fetchUserAccessInfo();
+        };
+    </script>
+    <style>
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #0070f3;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</body>
+
+</html>
