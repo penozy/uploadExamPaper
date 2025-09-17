@@ -249,7 +249,7 @@
                         // 顯示 navbar 並在右上角放 name 與 email（使用 class 切換以配合 Tailwind）
                         document.getElementById('navbar').classList.remove('hidden');
                         const navUser = document.getElementById('nav-user');
-                        if (navUser) navUser.innerText = (res.name ? res.name + ' · ' : '') + res.email;
+                        if (navUser) navUser.innerText = (res.name ? res.name + ' 老師好( ' + res.email + ' )' : res.email);
                         const navEmailMobile = document.getElementById('nav-email-mobile');
                         if (navEmailMobile) navEmailMobile.innerText = (res.name ? res.name + ' 老師好( ' + res.email + ' )' : res.email);
                         // 不顯示登入成功提示元素：授權使用者直接清空授權區塊
