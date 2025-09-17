@@ -4,7 +4,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>首頁 - 上傳考卷系統</title>
+    <title>首頁 - 定期考考卷上傳系統</title>
+
+    <!-- 快速原型：使用 Tailwind CDN（僅建議用於開發/示範） -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -33,8 +37,7 @@
             color: #0070f3;
         }
 
-        .login-btn,
-        .logout-btn {
+        .login-btn {
             width: 100%;
             padding: 12px;
             border: none;
@@ -45,25 +48,65 @@
             cursor: pointer;
             margin-top: 16px;
         }
-
-        .logout-btn {
-            background: #e00;
-        }
     </style>
+
+    <!-- 若採用正式流程（建議）：請使用 Tailwind CLI 產生精簡 CSS，然後將編譯後 CSS 貼入 tailwind.html，並在此用 template include 引入：
+         注意：要啟用下面 include，server 端的 doGet 必須回傳 createTemplateFromFile('index').evaluate()（見說明）
+         範例（已註解）： <?!= include('tailwind') ?>
+    -->
 </head>
 
 <body>
-    <div id="navbar" style="display:none;">
-        <div class="nav-left">上傳考卷系統</div>
-        <div class="nav-right" id="nav-email"></div>
-    </div>
+    <header id="navbar" class="hidden fixed inset-x-0 top-0 bg-white/95 backdrop-blur-md border-b border-gray-100 z-40">
+        <nav class="w-full px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center gap-4">
+                    <a href="#" class="text-lg font-semibold text-gray-800"><span id="school-name"
+                            class="mr-2"></span>定期考考卷上傳系統</a>
+                </div>
+                <div class="hidden md:flex items-center gap-6">
+                    <a href="#" class="text-gray-600 hover:text-gray-900">首頁</a>
+                    <a href="#" class="text-gray-600 hover:text-gray-900">上傳</a>
+                    <div id="nav-user" class="text-sm text-gray-700"></div>
+                </div>
+                <div class="md:hidden">
+                    <button id="nav-toggle" aria-expanded="false" aria-controls="mobile-menu" onclick="toggleNav()"
+                        class="p-2 rounded-md text-gray-600 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                            xmlns="http://www.w3.org/2000/svg">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 6h16M4 12h16M4 18h16"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </nav>
+        <div id="mobile-menu" class="md:hidden hidden px-4 pb-4">
+            <a href="#" class="block py-2 text-gray-700">首頁</a>
+            <div id="nav-email-mobile" class="mt-2 text-sm text-gray-700"></div>
+        </div>
+    </header>
 
-    <div class="container" id="main-container">
-        <h1>定期考考卷上傳系統</h1>
-        <div id="auth-section">
-            <button class="login-btn" onclick="login()">使用 Google 登入</button>
+    <!-- 將原本 container 保留，但同時示範加入 Tailwind utility class（開發測試用） -->
+    <div class="container mx-auto max-w-md mt-20 bg-white rounded-lg shadow-lg p-8" id="main-container">
+        <h1 class="text-2xl font-semibold text-center text-gray-800">定期考考卷上傳系統</h1>
+        <div id="auth-section" class="mt-6">
+            <button class="login-btn w-full py-3 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                onclick="login()">使用 Google 登入</button>
         </div>
         <div id="domain-prompt" style="margin-top:12px;color:#444"></div>
+    </div>
+    <!-- 未授權提示 Modal -->
+    <div id="domain-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h2 class="text-lg font-semibold text-gray-800">授權說明</h2>
+            <p id="domain-modal-msg" class="mt-3 text-sm text-gray-700"></p>
+            <div class="mt-4 flex justify-end gap-2">
+                <a id="domain-login-link" class="inline-block px-4 py-2 bg-blue-600 text-white rounded-md" href="#"
+                    target="_blank" rel="noopener">前往自訂網域 Gmail 登入</a>
+                <button onclick="closeDomainModal()" class="px-4 py-2 rounded-md border">關閉</button>
+            </div>
+        </div>
     </div>
     <script>
         /* 改善前端顯示：loading 標示、錯誤處理、未登入或未授權替代文字 */
@@ -87,8 +130,7 @@
         }
 
         function showEmail(email) {
-            setAuthHTML('<div class="email">登入成功，您的 Email：<br><b>' + escapeHtml(email) + '</b></div>' +
-                '<button class="logout-btn" onclick="logout()">登出</button>');
+            setAuthHTML('<div class="email">登入成功，您的 Email：<br><b>' + escapeHtml(email) + '</b></div>');
         }
 
         function showLoginPrompt() {
@@ -101,19 +143,80 @@
                 '<button class="login-btn" onclick="login()">重試</button>');
         }
 
+        // 顯示以設定中的網域為主的 modal（用於未取得 email 或要求使用學校帳號登入的情況）
+        function showDomainModalForMissingEmail() {
+            if (typeof google === 'undefined' || !google.script) {
+                // 無法呼叫 server 時顯示備援訊息
+                const modal = document.getElementById('domain-modal');
+                const modalMsg = document.getElementById('domain-modal-msg');
+                const modalLink = document.getElementById('domain-login-link');
+                modalMsg.innerText = '尚未取得登入資訊，請嘗試使用 Google 登入或聯絡系統管理員。';
+                modalLink.href = '#';
+                modalLink.classList.add('hidden');
+                const authSection = document.getElementById('auth-section');
+                if (authSection) authSection.innerHTML = '';
+                if (modal) modal.classList.remove('hidden');
+                return;
+            }
+
+            google.script.run
+                .withSuccessHandler(function (settings) {
+                    try {
+                        const domain = settings && settings['使用者信箱網域'] ? settings['使用者信箱網域'] : '';
+                        const modal = document.getElementById('domain-modal');
+                        const modalMsg = document.getElementById('domain-modal-msg');
+                        const modalLink = document.getElementById('domain-login-link');
+                        if (domain) {
+                            modalMsg.innerText = '請使用學校帳號登入（網域：' + escapeHtml(domain) + '）。';
+                            modalLink.href = 'https://mail.google.com/a/' + encodeURIComponent(domain) + '/';
+                            modalLink.classList.remove('hidden');
+                        } else {
+                            modalMsg.innerText = '尚未設定可登入的信箱網域，請聯絡系統管理員。';
+                            modalLink.href = '#';
+                            modalLink.classList.add('hidden');
+                        }
+                        const authSection = document.getElementById('auth-section');
+                        if (authSection) authSection.innerHTML = '';
+                        if (modal) modal.classList.remove('hidden');
+                    } catch (e) {
+                        console.error('showDomainModalForMissingEmail handler error', e);
+                    }
+                })
+                .withFailureHandler(function (err) {
+                    const modal = document.getElementById('domain-modal');
+                    const modalMsg = document.getElementById('domain-modal-msg');
+                    const modalLink = document.getElementById('domain-login-link');
+                    modalMsg.innerText = '無法取得系統設定，請稍後再試或聯絡系統管理員。';
+                    modalLink.href = '#';
+                    modalLink.classList.add('hidden');
+                    const authSection = document.getElementById('auth-section');
+                    if (authSection) authSection.innerHTML = '';
+                    if (modal) modal.classList.remove('hidden');
+                })
+                .getSettingsAsObject();
+        }
+
         function fetchUserEmail() {
             showLoading();
             if (typeof google !== 'undefined' && google.script) {
                 google.script.run
                     .withSuccessHandler(function (email) {
                         if (email) {
+                            // 若成功取得 email，同步更新 navbar（桌面 + 手機）
+                            const navbar = document.getElementById('navbar');
+                            if (navbar) navbar.classList.remove('hidden');
+                            const navUser = document.getElementById('nav-user');
+                            if (navUser) navUser.innerText = email;
+                            const navEmailMobile = document.getElementById('nav-email-mobile');
+                            if (navEmailMobile) navEmailMobile.innerText = email;
+                            // 對於單純取 email 的流程仍保留 showEmail
                             showEmail(email);
                         } else {
-                            showLoginPrompt();
+                            showDomainModalForMissingEmail();
                         }
                     })
                     .withFailureHandler(function (err) {
-                        var msg = (err && err.message) ? err.message : JSON.stringify(err);
+                        const msg = (err && err.message) ? err.message : JSON.stringify(err);
                         showError(msg);
                     })
                     .getUserEmail();
@@ -135,29 +238,49 @@
                 .withSuccessHandler(function (res) {
                     // res = { email, authorized, domain }
                     if (!res || !res.email) {
-                        showLoginPrompt();
+                        showDomainModalForMissingEmail();
                         return;
                     }
 
-                    // 若授權（email 出現在命題教師Email 欄）
+                    console.log('User email:', res.email, 'Authorized:', res.authorized, 'Domain:', res.domain);
+
+                    // 若授權（email 出現在命題教師 Email 欄）
                     if (res.authorized) {
-                        // 顯示 navbar 並在右上角放 email
-                        document.getElementById('navbar').style.display = 'flex';
-                        document.getElementById('nav-email').innerText = res.email;
-                        showEmail(res.email);
-                        document.getElementById('domain-prompt').innerText = '';
+                        // 顯示 navbar 並在右上角放 name 與 email（使用 class 切換以配合 Tailwind）
+                        document.getElementById('navbar').classList.remove('hidden');
+                        const navUser = document.getElementById('nav-user');
+                        if (navUser) navUser.innerText = (res.name ? res.name + ' · ' : '') + res.email;
+                        const navEmailMobile = document.getElementById('nav-email-mobile');
+                        if (navEmailMobile) navEmailMobile.innerText = (res.name ? res.name + ' 老師好( ' + res.email + ' )' : res.email);
+                        // 不顯示登入成功提示元素：授權使用者直接清空授權區塊
+                        const authSection = document.getElementById('auth-section');
+                        if (authSection) authSection.innerHTML = '';
+                        const domainPrompt = document.getElementById('domain-prompt');
+                        if (domainPrompt) domainPrompt.innerText = '';
                     } else {
-                        // 未授權：提示要登入設定工作表中 A 欄為「使用者信箱網域」對應的 B 欄值
-                        showLoginPrompt();
+                        // 未授權：只顯示 modal，提示使用者以指定網域登入（不顯示額外登入提示）
+                        const authSection = document.getElementById('auth-section');
+                        if (authSection) authSection.innerHTML = '';
+                        const modal = document.getElementById('domain-modal');
+                        const modalMsg = document.getElementById('domain-modal-msg');
+                        const modalLink = document.getElementById('domain-login-link');
                         if (res.domain) {
-                            document.getElementById('domain-prompt').innerText = '提示：請使用網域為 "' + escapeHtml(res.domain) + '" 的帳號登入，或至「設定」工作表新增網域。';
+                            modalMsg.innerText = '您尚未登入 "' + escapeHtml(res.domain) + '" 的 Google 信箱帳號。';
+                            // 組出一個前往該網域 Gmail 的連結示意（使用 mail.google.com/a/<domain>）
+                            modalLink.href = 'https://mail.google.com/a/' + encodeURIComponent(res.domain) + '/';
+                            modalLink.classList.remove('hidden');
                         } else {
-                            document.getElementById('domain-prompt').innerText = '提示：尚未設定可登入的信箱網域，請聯絡管理員在「設定」工作表新增。';
+                            modalMsg.innerText = '您目前帳號未被授權。尚未在設定中指定可登入的信箱網域，請聯絡系統管理員。';
+                            modalLink.href = '#';
+                            modalLink.classList.add('hidden');
                         }
+                        if (modal) modal.classList.remove('hidden');
+                        const domainPrompt = document.getElementById('domain-prompt');
+                        if (domainPrompt) domainPrompt.innerText = '';
                     }
                 })
                 .withFailureHandler(function (err) {
-                    var msg = (err && err.message) ? err.message : JSON.stringify(err);
+                    const msg = (err && err.message) ? err.message : JSON.stringify(err);
                     showError(msg);
                 })
                 .getUserAccessInfo();
@@ -168,15 +291,54 @@
         }
 
         function logout() {
-            // Apps Script 無法直接登出 Google 帳號，這裡僅重設畫面
-            showLoginPrompt();
+            // 保留空的 logout 行為以避免呼叫錯誤（實際登出需由使用者於 Google 帳戶頁面進行）
+            showDomainModalForMissingEmail();
+        }
+
+        function closeDomainModal() {
+            const modal = document.getElementById('domain-modal');
+            if (modal) modal.classList.add('hidden');
+        }
+
+        function toggleNav() {
+            const btn = document.getElementById('nav-toggle');
+            const menu = document.getElementById('mobile-menu');
+            if (!menu || !btn) return;
+            const expanded = btn.getAttribute('aria-expanded') === 'true';
+            btn.setAttribute('aria-expanded', String(!expanded));
+            menu.classList.toggle('hidden');
         }
 
         // 頁面載入時自動檢查授權與登入狀態
+        function fetchSettings() {
+            if (typeof google === 'undefined' || !google.script) return;
+            google.script.run
+                .withSuccessHandler(function (settings) {
+                    try {
+                        const school = settings && settings['學校名稱'] ? settings['學校名稱'] : '';
+                        const el = document.getElementById('school-name');
+                        if (el) el.innerText = school ? (school + ' - ') : '';
+                        // 將 modal 的連結文字由「自訂網域」替換為學校名稱（若存在）
+                        const modalLink = document.getElementById('domain-login-link');
+                        if (modalLink) {
+                            modalLink.innerText = school ? ('前往 ' + school + ' Gmail 登入') : '前往自訂網域 Gmail 登入';
+                        }
+                    } catch (e) {
+                        console.error('fetchSettings handler error', e);
+                    }
+                })
+                .withFailureHandler(function (err) {
+                    console.warn('getSettingsAsObject failed', err);
+                })
+                .getSettingsAsObject();
+        }
+
         window.onload = function () {
+            fetchSettings();
             fetchUserAccessInfo();
         };
     </script>
+
     <style>
         .spinner {
             display: inline-block;

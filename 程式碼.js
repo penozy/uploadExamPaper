@@ -84,9 +84,6 @@ function getUserAccessInfo() {
     const rawEmail = Session.getActiveUser().getEmail() || "";
     const email = String(rawEmail);
     const emailLower = email.toLowerCase();
-    const cacheKey = "getUserAccessInfo:" + emailLower;
-    const CACHE_TTL_SECONDS = 300; // 5 minutes
-    const cache = CacheService.getScriptCache();
 
     const normalizeEmail = (input) => {
         if (!input && input !== 0) return "";
@@ -99,39 +96,7 @@ function getUserAccessInfo() {
         return token.toLowerCase();
     };
 
-    // 嘗試回傳快取值
-    try {
-        const cached = cache.get(cacheKey);
-        if (cached) {
-            Logger.log("getUserAccessInfo: cache hit for %s", emailLower);
-            const parsed = JSON.parse(cached);
-            try {
-                writeAdminLog("DEBUG", "cache hit", { email: emailLower });
-            } catch (err) {}
-            return {
-                email: parsed.email || email,
-                authorized: !!parsed.authorized,
-                domain: parsed.domain || "",
-            };
-        } else {
-            Logger.log("getUserAccessInfo: cache miss for %s", emailLower);
-            try {
-                writeAdminLog("DEBUG", "cache miss", { email: emailLower });
-            } catch (err) {}
-        }
-    } catch (err) {
-        Logger.log(
-            "getUserAccessInfo: cache read error for %s: %s",
-            emailLower,
-            err && err.message
-        );
-        try {
-            writeAdminLog("ERROR", "cache read error", {
-                email: emailLower,
-                error: err && err.message,
-            });
-        } catch (err2) {}
-    }
+    // (已移除 CacheService 使用：改為直接查詢試算表並回傳最新資訊)
 
     try {
         const ss = getSpreadsheet();
@@ -144,60 +109,73 @@ function getUserAccessInfo() {
             "學期補考",
         ];
         const emailNorm = normalizeEmail(emailLower);
-
-        const authorized = checkSheets.some((sheetName) => {
+        // 嘗試取得對應的命題教師姓名（若 email 匹配）
+        let authorized = false;
+        let teacherName = "";
+        for (let i = 0; i < checkSheets.length; i++) {
+            const sheetName = checkSheets[i];
             const sh = ss.getSheetByName(sheetName);
-            if (!sh) return false;
+            if (!sh) continue;
             const lastCol = sh.getLastColumn();
-            if (lastCol < 1) return false;
+            if (lastCol < 1) continue;
             const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
-            const colIndex = headers.findIndex((h) => h === "命題教師Email");
-            if (colIndex < 0) return false;
+            // 正規化標題：去掉空白、破折號、底線，轉小寫，方便容錯匹配
+            const normalizeHeader = (h) => {
+                if (h === null || h === undefined) return "";
+                return String(h)
+                    .trim()
+                    .replace(/[\s\-_–—]+/g, "")
+                    .replace(/\uFEFF/g, "")
+                    .toLowerCase();
+            };
+            const normHeaders = headers.map(normalizeHeader);
+            // 容錯：email 欄可能標題包含 email / 信箱 / 郵件 等字詞
+            const emailColIndex = normHeaders.findIndex((hh) =>
+                /email|信箱|郵件/.test(hh)
+            );
+            if (emailColIndex < 0) continue;
+            // 容錯：姓名欄可能以「姓名」「名字」等命名
+            let nameColIndex = normHeaders.findIndex((hh) =>
+                /姓名|名字/.test(hh)
+            );
+            // 若找不到明確的姓名欄，嘗試使用 email 欄左右相鄰欄作為候補（常見情況）
+            if (nameColIndex < 0) {
+                if (emailColIndex - 1 >= 0) nameColIndex = emailColIndex - 1;
+                else if (emailColIndex + 1 < normHeaders.length)
+                    nameColIndex = emailColIndex + 1;
+            }
             const lastRow = sh.getLastRow();
-            if (lastRow <= 1) return false;
-            const values = sh
-                .getRange(2, colIndex + 1, lastRow - 1, 1)
-                .getValues()
-                .map((rowArr) => rowArr[0]);
-            return values.some((valueCell) => {
-                if (!valueCell && valueCell !== 0) return false;
-                return normalizeEmail(valueCell) === emailNorm;
-            });
-        });
+            if (lastRow <= 1) continue;
+            const rows = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+            for (let r = 0; r < rows.length; r++) {
+                const row = rows[r];
+                const emailCell = row[emailColIndex];
+                if (!emailCell && emailCell !== 0) continue;
+                if (normalizeEmail(emailCell) === emailNorm) {
+                    authorized = true;
+                    if (nameColIndex >= 0) {
+                        const nameCell = row[nameColIndex];
+                        if (nameCell || nameCell === 0)
+                            teacherName = String(nameCell).trim();
+                    }
+                    break;
+                }
+            }
+            if (authorized) break;
+        }
 
         const settings = getSettingsAsObject();
         const domain = settings["使用者信箱網域"] || "";
 
-        const result = { email, authorized, domain };
+        const result = { email, authorized, domain, name: teacherName };
 
-        // cache result
+        // 不使用 CacheService：直接回傳最新查詢結果
         try {
-            cache.put(cacheKey, JSON.stringify(result), CACHE_TTL_SECONDS);
-            Logger.log(
-                "getUserAccessInfo: cache set for %s (ttl %d seconds)",
-                emailLower,
-                CACHE_TTL_SECONDS
-            );
-            try {
-                writeAdminLog("DEBUG", "cache set", {
-                    email: emailLower,
-                    ttl: CACHE_TTL_SECONDS,
-                });
-            } catch (err) {}
-        } catch (err) {
-            Logger.log(
-                "getUserAccessInfo: cache set error for %s: %s",
-                emailLower,
-                err && err.message
-            );
-            try {
-                writeAdminLog("ERROR", "cache set error", {
-                    email: emailLower,
-                    error: err && err.message,
-                });
-            } catch (err2) {}
-        }
-
+            writeAdminLog("DEBUG", "getUserAccessInfo computed", {
+                email: emailLower,
+                authorized: authorized,
+            });
+        } catch (err) {}
         return result;
     } catch (errMain) {
         Logger.log(
@@ -205,39 +183,13 @@ function getUserAccessInfo() {
             emailLower,
             errMain && errMain.message
         );
-        // 發生錯誤時，嘗試回傳快取（若有），否則回傳安全的預設值
         try {
-            const cached = cache.get(cacheKey);
-            if (cached) {
-                Logger.log(
-                    "getUserAccessInfo: returning stale cache for %s after error",
-                    emailLower
-                );
-                try {
-                    writeAdminLog("WARN", "returning stale cache after error", {
-                        email: emailLower,
-                    });
-                } catch (errInner) {}
-                const parsed = JSON.parse(cached);
-                return {
-                    email: parsed.email || email,
-                    authorized: !!parsed.authorized,
-                    domain: parsed.domain || "",
-                };
-            }
-        } catch (err2) {
-            Logger.log(
-                "getUserAccessInfo: cache fallback read error for %s: %s",
-                emailLower,
-                err2 && err2.message
-            );
-            try {
-                writeAdminLog("ERROR", "cache fallback read error", {
-                    email: emailLower,
-                    error: err2 && err2.message,
-                });
-            } catch (err) {}
-        }
+            writeAdminLog("ERROR", "getUserAccessInfo exception", {
+                email: emailLower,
+                error: errMain && errMain.message,
+            });
+        } catch (err) {}
+        // 發生錯誤時回傳安全的預設值
         return { email, authorized: false, domain: "" };
     }
 }
@@ -327,4 +279,5 @@ function getSettingsAsObject() {
 
 function test() {
     Logger.log(getSettingsAsObject());
+    Logger.log(getUserAccessInfo());
 }
