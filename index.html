@@ -8,6 +8,7 @@
 
     <!-- 快速原型：使用 Tailwind CDN（僅建議用於開發/示範） -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
 
     <style>
         body {
@@ -87,9 +88,12 @@
     <!-- 將原本 container 保留，但同時示範加入 Tailwind utility class（開發測試用） -->
     <div class="container mx-auto max-w-md mt-20 bg-white rounded-lg shadow-lg p-8" id="main-container">
         <h1 class="text-2xl font-semibold text-center text-gray-800">定期考考卷上傳系統</h1>
-        <div id="auth-section" class="mt-6">
-            <button class="login-btn w-full py-3 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                onclick="login()">使用 Google 登入</button>
+        <div id="auth-section" class="mt-6 space-y-4">
+            <div id="signin-message" class="email text-gray-700">正在初始化 Google 登入...</div>
+            <div id="gis-button-wrapper" class="flex justify-center"></div>
+            <button id="fallback-login-btn"
+                class="login-btn w-full py-3 rounded-md bg-blue-600 text-white hover:bg-blue-700 hidden"
+                onclick="login()">手動重新嘗試登入</button>
         </div>
         <div id="domain-prompt" style="margin-top:12px;color:#444"></div>
     </div>
@@ -106,232 +110,341 @@
         </div>
     </div>
     <script>
-        /* 改善前端顯示：loading 標示、錯誤處理、未登入或未授權替代文字 */
+        let authConfig = {clientId: "", allowedDomain: ""};
+        let gisReady = false;
+        let gisInitAttempts = 0;
 
         function escapeHtml(unsafe) {
-            if (!unsafe) return '';
+            if (!unsafe) return "";
             return String(unsafe)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#039;');
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }
 
-        function setAuthHTML(html) {
-            document.getElementById('auth-section').innerHTML = html;
+        function resetAuthSection() {
+            const section = document.getElementById("auth-section");
+            if (section) section.classList.remove("hidden");
+        }
+
+        function setAuthMessage(html) {
+            const messageEl = document.getElementById("signin-message");
+            if (messageEl) messageEl.innerHTML = html;
+        }
+
+        function toggleFallbackButton(show) {
+            const btn = document.getElementById("fallback-login-btn");
+            if (!btn) return;
+            if (show) btn.classList.remove("hidden");
+            else btn.classList.add("hidden");
+        }
+
+        function clearGisButton() {
+            const wrapper = document.getElementById("gis-button-wrapper");
+            if (wrapper) wrapper.innerHTML = "";
+        }
+
+        function renderGisButton() {
+            if (!gisReady) return;
+            const wrapper = document.getElementById("gis-button-wrapper");
+            if (!wrapper) return;
+            wrapper.innerHTML = "";
+            if (window.google && window.google.accounts && window.google.accounts.id) {
+                window.google.accounts.id.renderButton(wrapper, {
+                    theme: "filled_blue",
+                    size: "large",
+                    type: "standard",
+                    text: "signin_with",
+                    shape: "pill",
+                    width: 280,
+                });
+            }
         }
 
         function showLoading() {
-            setAuthHTML('<div class="email">載入中 <span class="spinner" aria-hidden="true"></span></div>');
-        }
-
-        function showEmail(email) {
-            setAuthHTML('<div class="email">登入成功，您的 Email：<br><b>' + escapeHtml(email) + '</b></div>');
-        }
-
-        function showLoginPrompt() {
-            setAuthHTML('<div class="email">未登入或未授權存取 Email。請按下方登入並授權。</div>' +
-                '<button class="login-btn" onclick="login()">使用 Google 登入</button>');
+            resetAuthSection();
+            toggleFallbackButton(false);
+            clearGisButton();
+            setAuthMessage('載入中 <span class="spinner" aria-hidden="true"></span>');
         }
 
         function showError(message) {
-            setAuthHTML('<div class="email" style="color:#e00">錯誤：' + escapeHtml(message) + '</div>' +
-                '<button class="login-btn" onclick="login()">重試</button>');
+            resetAuthSection();
+            setAuthMessage('<div class="email" style="color:#e00">錯誤：' + escapeHtml(message) + "</div>");
+            toggleFallbackButton(true);
+            renderGisButton();
         }
 
-        // 顯示以設定中的網域為主的 modal（用於未取得 email 或要求使用學校帳號登入的情況）
+        function showLoginPrompt() {
+            resetAuthSection();
+            const hint = authConfig.allowedDomain
+                ? "請使用 " + escapeHtml(authConfig.allowedDomain) + " Google 帳號登入。"
+                : "請使用 Google 登入。";
+            setAuthMessage('<div class="email">' + hint + "</div>");
+            toggleFallbackButton(true);
+            renderGisButton();
+        }
+
+        function updateDomainPrompt() {
+            const prompt = document.getElementById("domain-prompt");
+            if (!prompt) return;
+            if (authConfig.allowedDomain) {
+                prompt.innerText = "僅限 " + authConfig.allowedDomain + " 網域帳號登入。";
+            } else {
+                prompt.innerText = "";
+            }
+        }
+
+        function applyAccessInfo(res) {
+            if (!res || !res.email) {
+                showLoginPrompt();
+                showDomainModalForMissingEmail();
+                return;
+            }
+
+            const navbar = document.getElementById("navbar");
+            if (navbar) navbar.classList.remove("hidden");
+            const displayName = res.name ? res.name + " 老師好( " + res.email + " )" : res.email;
+            const navUser = document.getElementById("nav-user");
+            if (navUser) navUser.innerText = displayName;
+            const navEmailMobile = document.getElementById("nav-email-mobile");
+            if (navEmailMobile) navEmailMobile.innerText = displayName;
+
+            if (res.authorized) {
+                const authSection = document.getElementById("auth-section");
+                if (authSection) authSection.classList.add("hidden");
+                setAuthMessage("");
+                clearGisButton();
+                toggleFallbackButton(false);
+                const domainPrompt = document.getElementById("domain-prompt");
+                if (domainPrompt) domainPrompt.innerText = "";
+                const modal = document.getElementById("domain-modal");
+                if (modal) modal.classList.add("hidden");
+                return;
+            }
+
+            showLoginPrompt();
+
+            const modal = document.getElementById("domain-modal");
+            const modalMsg = document.getElementById("domain-modal-msg");
+            const modalLink = document.getElementById("domain-login-link");
+            const domain = (res.domain || authConfig.allowedDomain || "").toString();
+            if (domain) {
+                if (modalMsg) modalMsg.innerText = '您尚未登入 "' + domain + '" 的 Google 信箱帳號。';
+                if (modalLink) {
+                    modalLink.href = "https://mail.google.com/a/" + encodeURIComponent(domain) + "/";
+                    modalLink.classList.remove("hidden");
+                }
+            } else {
+                if (modalMsg) modalMsg.innerText = "您目前帳號未被授權，請聯絡系統管理員。";
+                if (modalLink) {
+                    modalLink.href = "#";
+                    modalLink.classList.add("hidden");
+                }
+            }
+            if (modal) modal.classList.remove("hidden");
+        }
+
         function showDomainModalForMissingEmail() {
-            if (typeof google === 'undefined' || !google.script) {
-                // 無法呼叫 server 時顯示備援訊息
-                const modal = document.getElementById('domain-modal');
-                const modalMsg = document.getElementById('domain-modal-msg');
-                const modalLink = document.getElementById('domain-login-link');
-                modalMsg.innerText = '尚未取得登入資訊，請嘗試使用 Google 登入或聯絡系統管理員。';
-                modalLink.href = '#';
-                modalLink.classList.add('hidden');
-                const authSection = document.getElementById('auth-section');
-                if (authSection) authSection.innerHTML = '';
-                if (modal) modal.classList.remove('hidden');
+            const modal = document.getElementById("domain-modal");
+            const modalMsg = document.getElementById("domain-modal-msg");
+            const modalLink = document.getElementById("domain-login-link");
+            const domain = authConfig.allowedDomain;
+            if (domain) {
+                if (modalMsg) modalMsg.innerText = "請使用學校帳號登入（網域：" + domain + "）。";
+                if (modalLink) {
+                    modalLink.href = "https://mail.google.com/a/" + encodeURIComponent(domain) + "/";
+                    modalLink.classList.remove("hidden");
+                }
+                if (modal) modal.classList.remove("hidden");
+                return;
+            }
+
+            if (typeof google === "undefined" || !google.script) {
+                if (modalMsg) modalMsg.innerText = "尚未取得登入資訊，請嘗試使用 Google 登入或聯絡系統管理員。";
+                if (modalLink) {
+                    modalLink.href = "#";
+                    modalLink.classList.add("hidden");
+                }
+                if (modal) modal.classList.remove("hidden");
                 return;
             }
 
             google.script.run
                 .withSuccessHandler(function (settings) {
-                    try {
-                        const domain = settings && settings['使用者信箱網域'] ? settings['使用者信箱網域'] : '';
-                        const modal = document.getElementById('domain-modal');
-                        const modalMsg = document.getElementById('domain-modal-msg');
-                        const modalLink = document.getElementById('domain-login-link');
-                        if (domain) {
-                            modalMsg.innerText = '請使用學校帳號登入（網域：' + escapeHtml(domain) + '）。';
-                            modalLink.href = 'https://mail.google.com/a/' + encodeURIComponent(domain) + '/';
-                            modalLink.classList.remove('hidden');
-                        } else {
-                            modalMsg.innerText = '尚未設定可登入的信箱網域，請聯絡系統管理員。';
-                            modalLink.href = '#';
-                            modalLink.classList.add('hidden');
+                    const domainSetting = settings && settings["使用者信箱網域"] ? settings["使用者信箱網域"] : "";
+                    if (domainSetting) {
+                        if (modalMsg) modalMsg.innerText = "請使用學校帳號登入（網域：" + domainSetting + "）。";
+                        if (modalLink) {
+                            modalLink.href = "https://mail.google.com/a/" + encodeURIComponent(domainSetting) + "/";
+                            modalLink.classList.remove("hidden");
                         }
-                        const authSection = document.getElementById('auth-section');
-                        if (authSection) authSection.innerHTML = '';
-                        if (modal) modal.classList.remove('hidden');
-                    } catch (e) {
-                        console.error('showDomainModalForMissingEmail handler error', e);
+                    } else {
+                        if (modalMsg) modalMsg.innerText = "尚未設定可登入的信箱網域，請聯絡系統管理員。";
+                        if (modalLink) {
+                            modalLink.href = "#";
+                            modalLink.classList.add("hidden");
+                        }
                     }
+                    if (modal) modal.classList.remove("hidden");
                 })
-                .withFailureHandler(function (err) {
-                    const modal = document.getElementById('domain-modal');
-                    const modalMsg = document.getElementById('domain-modal-msg');
-                    const modalLink = document.getElementById('domain-login-link');
-                    modalMsg.innerText = '無法取得系統設定，請稍後再試或聯絡系統管理員。';
-                    modalLink.href = '#';
-                    modalLink.classList.add('hidden');
-                    const authSection = document.getElementById('auth-section');
-                    if (authSection) authSection.innerHTML = '';
-                    if (modal) modal.classList.remove('hidden');
+                .withFailureHandler(function () {
+                    if (modalMsg) modalMsg.innerText = "無法取得系統設定，請稍後再試或聯絡系統管理員。";
+                    if (modalLink) {
+                        modalLink.href = "#";
+                        modalLink.classList.add("hidden");
+                    }
+                    if (modal) modal.classList.remove("hidden");
                 })
                 .getSettingsAsObject();
         }
 
-        function fetchUserEmail() {
-            showLoading();
-            if (typeof google !== 'undefined' && google.script) {
-                google.script.run
-                    .withSuccessHandler(function (email) {
-                        if (email) {
-                            // 若成功取得 email，同步更新 navbar（桌面 + 手機）
-                            const navbar = document.getElementById('navbar');
-                            if (navbar) navbar.classList.remove('hidden');
-                            const navUser = document.getElementById('nav-user');
-                            if (navUser) navUser.innerText = email;
-                            const navEmailMobile = document.getElementById('nav-email-mobile');
-                            if (navEmailMobile) navEmailMobile.innerText = email;
-                            // 對於單純取 email 的流程仍保留 showEmail
-                            showEmail(email);
-                        } else {
-                            showDomainModalForMissingEmail();
-                        }
-                    })
-                    .withFailureHandler(function (err) {
-                        const msg = (err && err.message) ? err.message : JSON.stringify(err);
-                        showError(msg);
-                    })
-                    .getUserEmail();
-            } else {
-                showError('google.script 未載入；請以 Apps Script Web App 方式開啟此頁面。');
+        function handleCredentialResponse(response) {
+            if (!response || !response.credential) {
+                showError("無法取得 Google 登入憑證，請重新嘗試。");
+                return;
             }
+
+            showLoading();
+
+            if (typeof google === "undefined" || !google.script) {
+                showError("google.script 未載入；請以 Apps Script Web App 方式開啟此頁面。");
+                return;
+            }
+
+            google.script.run
+                .withSuccessHandler(function (info) {
+                    applyAccessInfo(info);
+                })
+                .withFailureHandler(function (err) {
+                    const msg = err && err.message ? err.message : JSON.stringify(err);
+                    showError(msg);
+                })
+                .verifyIdToken(response.credential);
         }
 
-        // 新：呼叫後端檢查使用者是否在指定試算表欄位中
         function fetchUserAccessInfo() {
-            // 顯示 loading
             showLoading();
-            if (typeof google === 'undefined' || !google.script) {
-                showError('google.script 未載入；請以 Apps Script Web App 方式開啟此頁面。');
+
+            if (typeof google === "undefined" || !google.script) {
+                showError("google.script 未載入；請以 Apps Script Web App 方式開啟此頁面。");
                 return;
             }
 
             google.script.run
                 .withSuccessHandler(function (res) {
-                    // res = { email, authorized, domain }
-                    if (!res || !res.email) {
-                        showDomainModalForMissingEmail();
-                        return;
-                    }
-
-                    console.log('User email:', res.email, 'Authorized:', res.authorized, 'Domain:', res.domain);
-
-                    // 若授權（email 出現在命題教師 Email 欄）
-                    if (res.authorized) {
-                        // 顯示 navbar 並在右上角放 name 與 email（使用 class 切換以配合 Tailwind）
-                        document.getElementById('navbar').classList.remove('hidden');
-                        const navUser = document.getElementById('nav-user');
-                        if (navUser) navUser.innerText = (res.name ? res.name + ' 老師好( ' + res.email + ' )' : res.email);
-                        const navEmailMobile = document.getElementById('nav-email-mobile');
-                        if (navEmailMobile) navEmailMobile.innerText = (res.name ? res.name + ' 老師好( ' + res.email + ' )' : res.email);
-                        // 不顯示登入成功提示元素：授權使用者直接清空授權區塊
-                        const authSection = document.getElementById('auth-section');
-                        if (authSection) authSection.innerHTML = '';
-                        const domainPrompt = document.getElementById('domain-prompt');
-                        if (domainPrompt) domainPrompt.innerText = '';
-                    } else {
-                        // 未授權：只顯示 modal，提示使用者以指定網域登入（不顯示額外登入提示）
-                        const authSection = document.getElementById('auth-section');
-                        if (authSection) authSection.innerHTML = '';
-                        const modal = document.getElementById('domain-modal');
-                        const modalMsg = document.getElementById('domain-modal-msg');
-                        const modalLink = document.getElementById('domain-login-link');
-                        if (res.domain) {
-                            modalMsg.innerText = '您尚未登入 "' + escapeHtml(res.domain) + '" 的 Google 信箱帳號。';
-                            // 組出一個前往該網域 Gmail 的連結示意（使用 mail.google.com/a/<domain>）
-                            modalLink.href = 'https://mail.google.com/a/' + encodeURIComponent(res.domain) + '/';
-                            modalLink.classList.remove('hidden');
-                        } else {
-                            modalMsg.innerText = '您目前帳號未被授權。尚未在設定中指定可登入的信箱網域，請聯絡系統管理員。';
-                            modalLink.href = '#';
-                            modalLink.classList.add('hidden');
-                        }
-                        if (modal) modal.classList.remove('hidden');
-                        const domainPrompt = document.getElementById('domain-prompt');
-                        if (domainPrompt) domainPrompt.innerText = '';
-                    }
+                    applyAccessInfo(res);
                 })
                 .withFailureHandler(function (err) {
-                    const msg = (err && err.message) ? err.message : JSON.stringify(err);
+                    const msg = err && err.message ? err.message : JSON.stringify(err);
                     showError(msg);
                 })
                 .getUserAccessInfo();
         }
 
+        function fetchAuthConfig() {
+            if (typeof google === "undefined" || !google.script) return;
+
+            google.script.run
+                .withSuccessHandler(function (config) {
+                    authConfig = config || {clientId: "", allowedDomain: ""};
+                    updateDomainPrompt();
+                    setupGisClient();
+                })
+                .withFailureHandler(function (err) {
+                    console.warn("getAuthConfig failed", err);
+                    authConfig = {clientId: "", allowedDomain: ""};
+                    showLoginPrompt();
+                })
+                .getAuthConfig();
+        }
+
+        function setupGisClient() {
+            if (!authConfig.clientId) {
+                console.warn("缺少 GIS client ID Script Property");
+                showError("尚未設定 Google Identity Services client ID，請聯絡系統管理員。");
+                return;
+            }
+
+            if (!window.google || !window.google.accounts || !window.google.accounts.id) {
+                if (gisInitAttempts < 10) {
+                    gisInitAttempts += 1;
+                    setTimeout(setupGisClient, 400);
+                } else {
+                    console.warn("Google Identity Services script 未載入");
+                }
+                return;
+            }
+
+            if (gisReady) {
+                renderGisButton();
+                return;
+            }
+
+            window.google.accounts.id.initialize({
+                client_id: authConfig.clientId,
+                callback: handleCredentialResponse,
+                auto_select: false,
+                cancel_on_tap_outside: true,
+            });
+
+            gisReady = true;
+            renderGisButton();
+        }
+
         function login() {
-            fetchUserEmail();
+            if (gisReady && window.google && window.google.accounts && window.google.accounts.id) {
+                window.google.accounts.id.prompt();
+            } else {
+                fetchUserAccessInfo();
+            }
         }
 
         function logout() {
-            // 保留空的 logout 行為以避免呼叫錯誤（實際登出需由使用者於 Google 帳戶頁面進行）
             showDomainModalForMissingEmail();
         }
 
         function closeDomainModal() {
-            const modal = document.getElementById('domain-modal');
-            if (modal) modal.classList.add('hidden');
+            const modal = document.getElementById("domain-modal");
+            if (modal) modal.classList.add("hidden");
         }
 
         function toggleNav() {
-            const btn = document.getElementById('nav-toggle');
-            const menu = document.getElementById('mobile-menu');
+            const btn = document.getElementById("nav-toggle");
+            const menu = document.getElementById("mobile-menu");
             if (!menu || !btn) return;
-            const expanded = btn.getAttribute('aria-expanded') === 'true';
-            btn.setAttribute('aria-expanded', String(!expanded));
-            menu.classList.toggle('hidden');
+            const expanded = btn.getAttribute("aria-expanded") === "true";
+            btn.setAttribute("aria-expanded", String(!expanded));
+            menu.classList.toggle("hidden");
         }
 
-        // 頁面載入時自動檢查授權與登入狀態
         function fetchSettings() {
-            if (typeof google === 'undefined' || !google.script) return;
+            if (typeof google === "undefined" || !google.script) return;
             google.script.run
                 .withSuccessHandler(function (settings) {
                     try {
-                        const school = settings && settings['學校名稱'] ? settings['學校名稱'] : '';
-                        const el = document.getElementById('school-name');
-                        if (el) el.innerText = school ? school : '';
-                        // 將 modal 的連結文字由「自訂網域」替換為學校名稱（若存在）
-                        const modalLink = document.getElementById('domain-login-link');
+                        const school = settings && settings["學校名稱"] ? settings["學校名稱"] : "";
+                        const el = document.getElementById("school-name");
+                        if (el) el.innerText = school ? school : "";
+                        const modalLink = document.getElementById("domain-login-link");
                         if (modalLink) {
-                            modalLink.innerText = school ? ('前往 ' + school + ' Gmail 登入') : '前往自訂網域 Gmail 登入';
+                            modalLink.innerText = school ? ("前往 " + school + " Gmail 登入") : "前往自訂網域 Gmail 登入";
                         }
                     } catch (e) {
-                        console.error('fetchSettings handler error', e);
+                        console.error("fetchSettings handler error", e);
                     }
                 })
                 .withFailureHandler(function (err) {
-                    console.warn('getSettingsAsObject failed', err);
+                    console.warn("getSettingsAsObject failed", err);
                 })
                 .getSettingsAsObject();
         }
 
         window.onload = function () {
             fetchSettings();
+            fetchAuthConfig();
             fetchUserAccessInfo();
         };
     </script>
